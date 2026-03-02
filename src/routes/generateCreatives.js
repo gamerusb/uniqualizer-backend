@@ -6,7 +6,6 @@ import multer from 'multer';
 import path from 'path';
 import { transcribeAudio, translateCaptions, calculateBanScore } from '../services/groq.js';
 import { generateCreativeVariation, generateThumbParams } from '../services/videoService.js';
-import { renderCreativeVariant } from '../services/renderService.js';
 import { UserStore, OfferStore, CreativeStore, PresetStore, canProcessCreative } from '../stores/index.js';
 import { resolveUser } from '../middleware/auth.js';
 import { isR2Configured, uploadFileToR2, copyObjectInR2, deleteObjectFromR2, getSignedDownloadUrl } from '../services/r2.js';
@@ -168,14 +167,12 @@ router.post('/', resolveUser, upload.single('video'), async (req, res) => {
             downloadUrl = `/results/${variation.outputFilename}`;
           }
         } else {
-          // Локальный рендер через FFmpeg
+          // Стабильный локальный fallback: просто копируем загруженный файл в results/
           try {
-            await renderCreativeVariant({
-              inputPath: req.file.path,
-              variation,
-            });
+            const destPath = path.resolve('results', variation.outputFilename);
+            fs.copyFileSync(req.file.path, destPath);
           } catch (fsErr) {
-            console.warn('[generate-creatives] local render to results/ failed:', fsErr.message);
+            console.warn('[generate-creatives] local copy to results/ failed:', fsErr.message);
           }
         }
 
