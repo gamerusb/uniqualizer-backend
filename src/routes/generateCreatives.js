@@ -8,6 +8,9 @@ import { transcribeAudio, translateCaptions, calculateBanScore } from '../servic
 import { generateCreativeVariation, generateThumbParams } from '../services/videoService.js';
 import { UserStore, OfferStore, CreativeStore, PresetStore, canProcessCreative } from '../stores/index.js';
 import { resolveUser } from '../middleware/auth.js';
+import { isR2Configured, uploadFileToR2, copyObjectInR2, deleteObjectFromR2, getSignedDownloadUrl } from '../services/r2.js';
+import { randomUUID } from 'crypto';
+import fs from 'fs';
 
 const router = express.Router();
 
@@ -61,6 +64,22 @@ router.post('/', resolveUser, upload.single('video'), async (req, res) => {
     if (!check.allowed) {
       return res.status(403).json({ success: false, error: check.reason });
     }
+
+    // ── 1.5 Upload original to R2 (for persistent downloads) ──────────────────
+    if (!isR2Configured()) {
+      return res.status(500).json({
+        success: false,
+        error: 'R2 не настроен. Добавь R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET в переменные окружения.',
+      });
+    }
+
+    const sourceKey = `sources/${req.user.id}/${Date.now()}_${randomUUID().slice(0, 8)}.mp4`;
+    await uploadFileToR2({
+      key: sourceKey,
+      filePath: req.file.path,
+      contentType: req.file.mimetype || 'video/mp4',
+      cacheControl: 'private, max-age=0, no-cache',
+    });
 
     // ── 2. Транскрипция (один раз для всех вариаций) ─────────────────────────
     let captions = [];
@@ -120,6 +139,21 @@ router.post('/', resolveUser, upload.single('video'), async (req, res) => {
           thumbParams = generateThumbParams({ variationIndex: i, captions, platform });
         }
 
+        // ── Upload/copy "result" to R2 ───────────────────────────────────────
+        // Сейчас backend не рендерит новый файл (это MVP-заглушка),
+        // поэтому для скачивания сохраняем копию исходника под уникальным именем.
+        const resultKey = `results/${variation.outputFilename}`;
+        await copyObjectInR2({
+          sourceKey,
+          destKey: resultKey,
+          contentType: req.file.mimetype || 'video/mp4',
+          cacheControl: 'private, max-age=0, no-cache',
+        });
+        const signedDownloadUrl = await getSignedDownloadUrl({
+          key: resultKey,
+          filename: variation.outputFilename,
+        });
+
         // Сохранить в store
         const creative = await CreativeStore.create({
           userId: req.user.id,
@@ -134,8 +168,10 @@ router.post('/', resolveUser, upload.single('video'), async (req, res) => {
           thumbParams,
           uniqParams: variation.uniqParams,
           captionsCount: captions.length,
-          downloadUrl: `/results/${variation.outputFilename}`,
-          thumbUrl: thumbParams ? `/results/${thumbParams.filename}` : null,
+          downloadKey: resultKey,
+          downloadUrl: signedDownloadUrl, // подписанная ссылка (TTL)
+          thumbKey: null,
+          thumbUrl: null,
           status: 'ready', // в реальном проде: 'processing' → 'ready'
         });
 
@@ -143,7 +179,7 @@ router.post('/', resolveUser, upload.single('video'), async (req, res) => {
           id: creative.id,
           variationIndex: i + 1,
           platform,
-          downloadUrl: creative.downloadUrl,
+          downloadUrl: signedDownloadUrl,
           thumbUrl: creative.thumbUrl,
           language: creative.language,
           subtitleStyle,
@@ -166,6 +202,10 @@ router.post('/', resolveUser, upload.single('video'), async (req, res) => {
 
     // ── 6. Обновить счётчик пользователя ─────────────────────────────────────
     await UserStore.incrementVideoCount(req.user.id);
+
+    // Cleanup: delete temporary source object + local upload
+    try { await deleteObjectFromR2({ key: sourceKey }); } catch {}
+    try { fs.unlinkSync(req.file.path); } catch {}
 
     res.json({
       success: true,

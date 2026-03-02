@@ -4,6 +4,7 @@
 import express from 'express';
 import { OfferStore, CreativeStore } from '../stores/index.js';
 import { resolveUser } from '../middleware/auth.js';
+import { isR2Configured, getSignedDownloadUrl } from '../services/r2.js';
 
 const router = express.Router();
 
@@ -37,7 +38,23 @@ router.get('/creatives', resolveUser, async (req, res) => {
   const creatives = offerId
     ? await CreativeStore.findByOfferId(offerId)
     : await CreativeStore.findByUserId(req.user.id);
-  res.json({ success: true, creatives });
+
+  if (!isR2Configured()) {
+    return res.json({ success: true, creatives });
+  }
+
+  const withUrls = await Promise.all(creatives.map(async c => {
+    if (!c.downloadKey) return c;
+    try {
+      const filename = c.downloadKey.split('/').pop();
+      const url = await getSignedDownloadUrl({ key: c.downloadKey, filename });
+      return { ...c, downloadUrl: url };
+    } catch {
+      return c;
+    }
+  }));
+
+  res.json({ success: true, creatives: withUrls });
 });
 
 // ── USER INFO ─────────────────────────────────────────────────────────────────

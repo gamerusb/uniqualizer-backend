@@ -12,6 +12,9 @@
     "multer": "^1.4.5-lts.1",
     "groq-sdk": "^0.3.3",
     "uuid": "^9.0.0",
-    "dotenv": "^16.3.1"
+    "dotenv": "^16.3.1",
+    "@aws-sdk/client-s3": "^3.888.0",
+    "@aws-sdk/lib-storage": "^3.888.0",
+    "@aws-sdk/s3-request-presigner": "^3.888.0"
   }
 }
