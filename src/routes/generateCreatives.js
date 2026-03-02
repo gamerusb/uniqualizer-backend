@@ -166,6 +166,14 @@ router.post('/', resolveUser, upload.single('video'), async (req, res) => {
             downloadKey = null;
             downloadUrl = `/results/${variation.outputFilename}`;
           }
+        } else {
+          // Локальный fallback: скопировать загруженный файл в results/
+          try {
+            const destPath = path.resolve('results', variation.outputFilename);
+            fs.copyFileSync(req.file.path, destPath);
+          } catch (fsErr) {
+            console.warn('[generate-creatives] local copy to results/ failed:', fsErr.message);
+          }
         }
 
         // Сохранить в store
