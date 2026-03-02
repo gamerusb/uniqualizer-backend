@@ -3,6 +3,10 @@
 // Имитирует импорт YouTube-видео (в реальном проде: yt-dlp или YouTube API)
 
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import { randomUUID } from 'crypto';
+import ytdl from 'ytdl-core';
 import { generateYoutubeMeta } from '../services/groq.js';
 import { UserStore, canProcessCreative } from '../stores/index.js';
 import { resolveUser } from '../middleware/auth.js';
@@ -20,6 +24,25 @@ function extractYoutubeId(url) {
     if (m) return m[1];
   }
   return null;
+}
+
+async function downloadYoutubeToResults(videoId) {
+  const filename = `yt_${videoId}_${Date.now()}_${randomUUID().slice(0, 6)}.mp4`;
+  const destPath = path.resolve('results', filename);
+
+  await new Promise((resolve, reject) => {
+    const stream = ytdl(`https://www.youtube.com/watch?v=${videoId}`, {
+      quality: 'highest',
+      filter: 'audioandvideo',
+    }).pipe(fs.createWriteStream(destPath));
+    stream.on('finish', resolve);
+    stream.on('error', reject);
+  });
+
+  return {
+    filename,
+    downloadUrl: `/results/${filename}`,
+  };
 }
 
 router.post('/', resolveUser, async (req, res) => {
@@ -101,6 +124,47 @@ router.post('/', resolveUser, async (req, res) => {
     });
   } catch (err) {
     console.error('[import-youtube]', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/import-youtube/shorts
+// Запускает скачивание YouTube-видео и отдаёт прямую ссылку на mp4 в /results
+router.post('/shorts', resolveUser, async (req, res) => {
+  try {
+    const { url, mode = 'full', start = 0, end } = req.body;
+
+    if (!url) {
+      return res.status(400).json({ success: false, error: 'url обязателен' });
+    }
+
+    const videoId = extractYoutubeId(url);
+    if (!videoId) {
+      return res.status(400).json({ success: false, error: 'Не удалось распознать YouTube ссылку или ID' });
+    }
+
+    const check = canProcessCreative(req.user, {
+      isYoutubeImport: true,
+      videoDurationSec: end ? end - start : 60,
+      variations: 1,
+    });
+    if (!check.allowed) {
+      return res.status(403).json({ success: false, error: check.reason });
+    }
+
+    const { downloadUrl } = await downloadYoutubeToResults(videoId);
+
+    await UserStore.incrementYoutubeCount(req.user.id);
+
+    res.json({
+      success: true,
+      videoId,
+      downloadUrl,
+      mode,
+      clip: mode === 'clip' ? { start: Number(start), end: end ? Number(end) : null } : null,
+    });
+  } catch (err) {
+    console.error('[import-youtube/shorts]', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
