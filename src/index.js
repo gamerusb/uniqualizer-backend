@@ -49,7 +49,7 @@ app.use('/api', apiRouter);
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '1.0.0',
+    version: '1.1.0',
     timestamp: new Date().toISOString(),
     groqConfigured: Boolean(process.env.GROQ_API_KEY),
   });
@@ -69,7 +69,7 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════╗
-║       UNIQUALIZER PRO — Backend v1.0         ║
+║       UNIQUALIZER PRO — Backend v1.1         ║
 ║                                              ║
 ║  🚀 Running on  http://localhost:${PORT}        ║
 ║  📋 Health      http://localhost:${PORT}/health ║
