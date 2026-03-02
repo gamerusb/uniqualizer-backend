@@ -49,7 +49,8 @@ router.get('/creatives', resolveUser, async (req, res) => {
       const filename = c.downloadKey.split('/').pop();
       const url = await getSignedDownloadUrl({ key: c.downloadKey, filename });
       return { ...c, downloadUrl: url };
-    } catch {
+    } catch (err) {
+      console.warn('[api/creatives] R2 signed URL failed, keeping stored downloadUrl:', err.message);
       return c;
     }
   }));

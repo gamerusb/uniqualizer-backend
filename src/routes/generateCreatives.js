@@ -65,21 +65,25 @@ router.post('/', resolveUser, upload.single('video'), async (req, res) => {
       return res.status(403).json({ success: false, error: check.reason });
     }
 
-    // ── 1.5 Upload original to R2 (for persistent downloads) ──────────────────
-    if (!isR2Configured()) {
-      return res.status(500).json({
-        success: false,
-        error: 'R2 не настроен. Добавь R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET в переменные окружения.',
-      });
+    // ── 1.5 Попытаться загрузить оригинал в R2 (если настроен) ──────────────
+    let r2Enabled = false;
+    let sourceKey = null;
+    if (isR2Configured()) {
+      try {
+        sourceKey = `sources/${req.user.id}/${Date.now()}_${randomUUID().slice(0, 8)}.mp4`;
+        await uploadFileToR2({
+          key: sourceKey,
+          filePath: req.file.path,
+          contentType: req.file.mimetype || 'video/mp4',
+          cacheControl: 'private, max-age=0, no-cache',
+        });
+        r2Enabled = true;
+      } catch (r2Err) {
+        console.warn('[generate-creatives] R2 upload failed, falling back to local results/:', r2Err.message);
+        r2Enabled = false;
+        sourceKey = null;
+      }
     }
-
-    const sourceKey = `sources/${req.user.id}/${Date.now()}_${randomUUID().slice(0, 8)}.mp4`;
-    await uploadFileToR2({
-      key: sourceKey,
-      filePath: req.file.path,
-      contentType: req.file.mimetype || 'video/mp4',
-      cacheControl: 'private, max-age=0, no-cache',
-    });
 
     // ── 2. Транскрипция (один раз для всех вариаций) ─────────────────────────
     let captions = [];
@@ -139,20 +143,30 @@ router.post('/', resolveUser, upload.single('video'), async (req, res) => {
           thumbParams = generateThumbParams({ variationIndex: i, captions, platform });
         }
 
-        // ── Upload/copy "result" to R2 ───────────────────────────────────────
-        // Сейчас backend не рендерит новый файл (это MVP-заглушка),
-        // поэтому для скачивания сохраняем копию исходника под уникальным именем.
-        const resultKey = `results/${variation.outputFilename}`;
-        await copyObjectInR2({
-          sourceKey,
-          destKey: resultKey,
-          contentType: req.file.mimetype || 'video/mp4',
-          cacheControl: 'private, max-age=0, no-cache',
-        });
-        const signedDownloadUrl = await getSignedDownloadUrl({
-          key: resultKey,
-          filename: variation.outputFilename,
-        });
+        // ── Вычислить downloadUrl / ключи ────────────────────────────────────
+        let downloadUrl = `/results/${variation.outputFilename}`;
+        let downloadKey = null;
+
+        if (r2Enabled && sourceKey) {
+          try {
+            const resultKey = `results/${variation.outputFilename}`;
+            await copyObjectInR2({
+              sourceKey,
+              destKey: resultKey,
+              contentType: req.file.mimetype || 'video/mp4',
+              cacheControl: 'private, max-age=0, no-cache',
+            });
+            downloadKey = resultKey;
+            downloadUrl = await getSignedDownloadUrl({
+              key: resultKey,
+              filename: variation.outputFilename,
+            });
+          } catch (r2CopyErr) {
+            console.warn('[generate-creatives] R2 copy/signed URL failed, using local /results path:', r2CopyErr.message);
+            downloadKey = null;
+            downloadUrl = `/results/${variation.outputFilename}`;
+          }
+        }
 
         // Сохранить в store
         const creative = await CreativeStore.create({
@@ -168,8 +182,8 @@ router.post('/', resolveUser, upload.single('video'), async (req, res) => {
           thumbParams,
           uniqParams: variation.uniqParams,
           captionsCount: captions.length,
-          downloadKey: resultKey,
-          downloadUrl: signedDownloadUrl, // подписанная ссылка (TTL)
+          downloadKey,
+          downloadUrl,
           thumbKey: null,
           thumbUrl: null,
           status: 'ready', // в реальном проде: 'processing' → 'ready'
@@ -179,7 +193,7 @@ router.post('/', resolveUser, upload.single('video'), async (req, res) => {
           id: creative.id,
           variationIndex: i + 1,
           platform,
-          downloadUrl: signedDownloadUrl,
+          downloadUrl,
           thumbUrl: creative.thumbUrl,
           language: creative.language,
           subtitleStyle,
